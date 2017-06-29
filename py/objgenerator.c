@@ -1,115 +1,241 @@
+/*
+ * This file is part of the Micro Python project, http://micropython.org/
+ *
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2013, 2014 Damien P. George
+ * Copyright (c) 2014 Paul Sokolovsky
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
 #include <stdlib.h>
-#include <stdint.h>
-#include <string.h>
 #include <assert.h>
 
-#include "nlr.h"
-#include "misc.h"
-#include "mpconfig.h"
-#include "mpqstr.h"
-#include "obj.h"
-#include "runtime.h"
-#include "bc.h"
+#include "py/nlr.h"
+#include "py/obj.h"
+#include "py/runtime.h"
+#include "py/bc.h"
+#include "py/objgenerator.h"
+#include "py/objfun.h"
 
 /******************************************************************************/
 /* generator wrapper                                                          */
 
 typedef struct _mp_obj_gen_wrap_t {
     mp_obj_base_t base;
-    uint n_state;
     mp_obj_t *fun;
 } mp_obj_gen_wrap_t;
 
-// args are in reverse order in the array
-mp_obj_t gen_wrap_call_n(mp_obj_t self_in, int n_args, const mp_obj_t *args) {
-    mp_obj_gen_wrap_t *self = self_in;
-    mp_obj_t self_fun = self->fun;
-    assert(MP_OBJ_IS_TYPE(self_fun, &fun_bc_type));
-    int bc_n_args;
-    uint bc_n_state;
-    const byte *bc_code;
-    mp_obj_fun_bc_get(self_fun, &bc_n_args, &bc_n_state, &bc_code);
-    if (n_args != bc_n_args) {
-        nlr_jump(mp_obj_new_exception_msg_2_args(MP_QSTR_TypeError, "function takes %d positional arguments but %d were given", (const char*)(machine_int_t)bc_n_args, (const char*)(machine_int_t)n_args));
-    }
+typedef struct _mp_obj_gen_instance_t {
+    mp_obj_base_t base;
+    mp_obj_dict_t *globals;
+    mp_code_state_t code_state;
+} mp_obj_gen_instance_t;
 
-    return mp_obj_new_gen_instance(bc_code, self->n_state, n_args, args);
+STATIC mp_obj_t gen_wrap_call(mp_obj_t self_in, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+    mp_obj_gen_wrap_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_obj_fun_bc_t *self_fun = (mp_obj_fun_bc_t*)self->fun;
+    assert(self_fun->base.type == &mp_type_fun_bc);
+
+    // bytecode prelude: get state size and exception stack size
+    size_t n_state = mp_decode_uint_value(self_fun->bytecode);
+    size_t n_exc_stack = mp_decode_uint_value(mp_decode_uint_skip(self_fun->bytecode));
+
+    // allocate the generator object, with room for local stack and exception stack
+    mp_obj_gen_instance_t *o = m_new_obj_var(mp_obj_gen_instance_t, byte,
+        n_state * sizeof(mp_obj_t) + n_exc_stack * sizeof(mp_exc_stack_t));
+    o->base.type = &mp_type_gen_instance;
+
+    o->globals = self_fun->globals;
+    o->code_state.fun_bc = self_fun;
+    o->code_state.ip = 0;
+    mp_setup_code_state(&o->code_state, n_args, n_kw, args);
+    return MP_OBJ_FROM_PTR(o);
 }
 
-const mp_obj_type_t gen_wrap_type = {
-    { &mp_const_type },
-    "generator",
-    .call_n = gen_wrap_call_n,
+const mp_obj_type_t mp_type_gen_wrap = {
+    { &mp_type_type },
+    .name = MP_QSTR_generator,
+    .call = gen_wrap_call,
 };
 
-mp_obj_t mp_obj_new_gen_wrap(uint n_locals, uint n_stack, mp_obj_t fun) {
+mp_obj_t mp_obj_new_gen_wrap(mp_obj_t fun) {
     mp_obj_gen_wrap_t *o = m_new_obj(mp_obj_gen_wrap_t);
-    o->base.type = &gen_wrap_type;
-    // we have at least 3 locals so the bc can write back fast[0,1,2] safely; should improve how this is done
-    o->n_state = (n_locals < 3 ? 3 : n_locals) + n_stack;
-    o->fun = fun;
-    return o;
+    o->base.type = &mp_type_gen_wrap;
+    o->fun = MP_OBJ_TO_PTR(fun);
+    return MP_OBJ_FROM_PTR(o);
 }
 
 /******************************************************************************/
 /* generator instance                                                         */
 
-typedef struct _mp_obj_gen_instance_t {
-    mp_obj_base_t base;
-    const byte *ip;
-    mp_obj_t *sp;
-    mp_obj_t state[];
-} mp_obj_gen_instance_t;
-
-void gen_instance_print(void (*print)(void *env, const char *fmt, ...), void *env, mp_obj_t self_in) {
-    print(env, "<generator object 'fun-name' at %p>", self_in);
+STATIC void gen_instance_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
+    (void)kind;
+    mp_obj_gen_instance_t *self = MP_OBJ_TO_PTR(self_in);
+    mp_printf(print, "<generator object '%q' at %p>", mp_obj_fun_get_name(MP_OBJ_FROM_PTR(self->code_state.fun_bc)), self);
 }
 
-mp_obj_t gen_instance_getiter(mp_obj_t self_in) {
-    return self_in;
-}
-
-mp_obj_t gen_instance_iternext(mp_obj_t self_in) {
-    mp_obj_gen_instance_t *self = self_in;
-    bool yield = mp_execute_byte_code_2(&self->ip, &self->state[0], &self->sp);
-    if (yield) {
-        return *self->sp;
+mp_vm_return_kind_t mp_obj_gen_resume(mp_obj_t self_in, mp_obj_t send_value, mp_obj_t throw_value, mp_obj_t *ret_val) {
+    mp_check_self(MP_OBJ_IS_TYPE(self_in, &mp_type_gen_instance));
+    mp_obj_gen_instance_t *self = MP_OBJ_TO_PTR(self_in);
+    if (self->code_state.ip == 0) {
+        // Trying to resume already stopped generator
+        *ret_val = MP_OBJ_STOP_ITERATION;
+        return MP_VM_RETURN_NORMAL;
+    }
+    if (self->code_state.sp == self->code_state.state - 1) {
+        if (send_value != mp_const_none) {
+            mp_raise_TypeError("can't send non-None value to a just-started generator");
+        }
     } else {
-        if (*self->sp == mp_const_none) {
-            return mp_const_stop_iteration;
-        } else {
-            // TODO return StopIteration with value *self->sp
-            return mp_const_stop_iteration;
+        *self->code_state.sp = send_value;
+    }
+    mp_obj_dict_t *old_globals = mp_globals_get();
+    mp_globals_set(self->globals);
+    mp_vm_return_kind_t ret_kind = mp_execute_bytecode(&self->code_state, throw_value);
+    mp_globals_set(old_globals);
+
+    switch (ret_kind) {
+        case MP_VM_RETURN_NORMAL:
+        default:
+            // Explicitly mark generator as completed. If we don't do this,
+            // subsequent next() may re-execute statements after last yield
+            // again and again, leading to side effects.
+            // TODO: check how return with value behaves under such conditions
+            // in CPython.
+            self->code_state.ip = 0;
+            *ret_val = *self->code_state.sp;
+            break;
+
+        case MP_VM_RETURN_YIELD:
+            *ret_val = *self->code_state.sp;
+            if (*ret_val == MP_OBJ_STOP_ITERATION) {
+                self->code_state.ip = 0;
+            }
+            break;
+
+        case MP_VM_RETURN_EXCEPTION: {
+            size_t n_state = mp_decode_uint_value(self->code_state.fun_bc->bytecode);
+            self->code_state.ip = 0;
+            *ret_val = self->code_state.state[n_state - 1];
+            break;
         }
     }
+
+    return ret_kind;
 }
 
-const mp_obj_type_t gen_instance_type = {
-    { &mp_const_type },
-    "generator",
-    .print = gen_instance_print,
-    .getiter = gen_instance_getiter,
-    .iternext = gen_instance_iternext,
+STATIC mp_obj_t gen_resume_and_raise(mp_obj_t self_in, mp_obj_t send_value, mp_obj_t throw_value) {
+    mp_obj_t ret;
+    switch (mp_obj_gen_resume(self_in, send_value, throw_value, &ret)) {
+        case MP_VM_RETURN_NORMAL:
+        default:
+            // Optimize return w/o value in case generator is used in for loop
+            if (ret == mp_const_none || ret == MP_OBJ_STOP_ITERATION) {
+                return MP_OBJ_STOP_ITERATION;
+            } else {
+                nlr_raise(mp_obj_new_exception_args(&mp_type_StopIteration, 1, &ret));
+            }
+
+        case MP_VM_RETURN_YIELD:
+            return ret;
+
+        case MP_VM_RETURN_EXCEPTION:
+            // TODO: Optimization of returning MP_OBJ_STOP_ITERATION is really part
+            // of mp_iternext() protocol, but this function is called by other methods
+            // too, which may not handled MP_OBJ_STOP_ITERATION.
+            if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(mp_obj_get_type(ret)), MP_OBJ_FROM_PTR(&mp_type_StopIteration))) {
+                mp_obj_t val = mp_obj_exception_get_value(ret);
+                if (val == mp_const_none) {
+                    return MP_OBJ_STOP_ITERATION;
+                }
+            }
+            nlr_raise(ret);
+    }
+}
+
+STATIC mp_obj_t gen_instance_iternext(mp_obj_t self_in) {
+    return gen_resume_and_raise(self_in, mp_const_none, MP_OBJ_NULL);
+}
+
+STATIC mp_obj_t gen_instance_send(mp_obj_t self_in, mp_obj_t send_value) {
+    mp_obj_t ret = gen_resume_and_raise(self_in, send_value, MP_OBJ_NULL);
+    if (ret == MP_OBJ_STOP_ITERATION) {
+        nlr_raise(mp_obj_new_exception(&mp_type_StopIteration));
+    } else {
+        return ret;
+    }
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_2(gen_instance_send_obj, gen_instance_send);
+
+STATIC mp_obj_t gen_instance_close(mp_obj_t self_in);
+STATIC mp_obj_t gen_instance_throw(size_t n_args, const mp_obj_t *args) {
+    mp_obj_t exc = (n_args == 2) ? args[1] : args[2];
+
+    mp_obj_t ret = gen_resume_and_raise(args[0], mp_const_none, exc);
+    if (ret == MP_OBJ_STOP_ITERATION) {
+        nlr_raise(mp_obj_new_exception(&mp_type_StopIteration));
+    } else {
+        return ret;
+    }
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(gen_instance_throw_obj, 2, 4, gen_instance_throw);
+
+STATIC mp_obj_t gen_instance_close(mp_obj_t self_in) {
+    mp_obj_t ret;
+    switch (mp_obj_gen_resume(self_in, mp_const_none, MP_OBJ_FROM_PTR(&mp_const_GeneratorExit_obj), &ret)) {
+        case MP_VM_RETURN_YIELD:
+            mp_raise_msg(&mp_type_RuntimeError, "generator ignored GeneratorExit");
+
+        // Swallow StopIteration & GeneratorExit (== successful close), and re-raise any other
+        case MP_VM_RETURN_EXCEPTION:
+            // ret should always be an instance of an exception class
+            if (mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(mp_obj_get_type(ret)), MP_OBJ_FROM_PTR(&mp_type_GeneratorExit)) ||
+                mp_obj_is_subclass_fast(MP_OBJ_FROM_PTR(mp_obj_get_type(ret)), MP_OBJ_FROM_PTR(&mp_type_StopIteration))) {
+                return mp_const_none;
+            }
+            nlr_raise(ret);
+
+        default:
+            // The only choice left is MP_VM_RETURN_NORMAL which is successful close
+            return mp_const_none;
+    }
+}
+
+STATIC MP_DEFINE_CONST_FUN_OBJ_1(gen_instance_close_obj, gen_instance_close);
+
+STATIC const mp_rom_map_elem_t gen_instance_locals_dict_table[] = {
+    { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&gen_instance_close_obj) },
+    { MP_ROM_QSTR(MP_QSTR_send), MP_ROM_PTR(&gen_instance_send_obj) },
+    { MP_ROM_QSTR(MP_QSTR_throw), MP_ROM_PTR(&gen_instance_throw_obj) },
 };
 
-// args are in reverse order in the array
-mp_obj_t mp_obj_new_gen_instance(const byte *bytecode, uint n_state, int n_args, const mp_obj_t *args) {
-    mp_obj_gen_instance_t *o = m_new_obj_var(mp_obj_gen_instance_t, mp_obj_t, n_state);
-    o->base.type = &gen_instance_type;
-    o->ip = bytecode;
-    o->sp = o->state + n_state;
+STATIC MP_DEFINE_CONST_DICT(gen_instance_locals_dict, gen_instance_locals_dict_table);
 
-    // copy args (which are in reverse order) to start of state array
-    for (int i = 0; i < n_args; i++) {
-        o->state[i] = args[n_args - 1 - i];
-    }
-
-    // TODO
-    // prelude for making cells (closed over variables)
-    // for now we just make sure there are no cells variables
-    // need to work out how to implement closed over variables in generators
-    assert(o->ip[0] == 0);
-    o->ip += 1;
-
-    return o;
-}
+const mp_obj_type_t mp_type_gen_instance = {
+    { &mp_type_type },
+    .name = MP_QSTR_generator,
+    .print = gen_instance_print,
+    .getiter = mp_identity_getiter,
+    .iternext = gen_instance_iternext,
+    .locals_dict = (mp_obj_dict_t*)&gen_instance_locals_dict,
+};

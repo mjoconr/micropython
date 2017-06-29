@@ -1,29 +1,53 @@
-#include <stdlib.h>
-#include <stdint.h>
+/*
+ * This file is part of the Micro Python project, http://micropython.org/
+ *
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2013, 2014 Damien P. George
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
 
-#include "nlr.h"
-#include "misc.h"
-#include "mpconfig.h"
-#include "obj.h"
+#include <stdlib.h>
+
+#include "py/nlr.h"
+#include "py/obj.h"
+#include "py/runtime0.h"
 
 typedef struct _mp_obj_none_t {
     mp_obj_base_t base;
 } mp_obj_none_t;
 
-void none_print(void (*print)(void *env, const char *fmt, ...), void *env, mp_obj_t self_in) {
-    print(env, "None");
+STATIC void none_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
+    (void)self_in;
+    if (MICROPY_PY_UJSON && kind == PRINT_JSON) {
+        mp_print_str(print, "null");
+    } else {
+        mp_print_str(print, "None");
+    }
 }
 
-const mp_obj_type_t none_type = {
-    { &mp_const_type },
-    "NoneType",
+const mp_obj_type_t mp_type_NoneType = {
+    { &mp_type_type },
+    .name = MP_QSTR_NoneType,
     .print = none_print,
+    .unary_op = mp_generic_unary_op,
 };
 
-static const mp_obj_none_t none_obj = {{&none_type}};
-const mp_obj_t mp_const_none = (mp_obj_t)&none_obj;
-
-// the stop-iteration object just needs to be something unique
-// it's not the StopIteration exception
-static const mp_obj_none_t stop_it_obj = {{&none_type}};
-const mp_obj_t mp_const_stop_iteration = (mp_obj_t)&stop_it_obj;
+const mp_obj_none_t mp_const_none_obj = {{&mp_type_NoneType}};

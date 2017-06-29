@@ -7,6 +7,7 @@
 *.map
 *.hex
 *.dis
+*.exe
 
 # Packages 
 ############
@@ -19,3 +20,25 @@
 ######################
 *.swp
 
+# Build directory
+######################
+build/
+
+# Test failure outputs
+######################
+tests/*.exp
+tests/*.out
+
+# Python cache files
+######################
+__pycache__/
+*.pyc
+
+# Customized Makefile/project overrides
+######################
+GNUmakefile
+user.props
+
+# Generated rst files
+######################
+genrst/

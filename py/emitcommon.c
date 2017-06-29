@@ -1,75 +1,77 @@
-#include <unistd.h>
-#include <stdio.h>
-#include <stdint.h>
-#include <string.h>
+/*
+ * This file is part of the Micro Python project, http://micropython.org/
+ *
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2013, 2014 Damien P. George
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
 #include <assert.h>
 
-#include "misc.h"
-#include "mpconfig.h"
-#include "lexer.h"
-#include "parse.h"
-#include "scope.h"
-#include "runtime0.h"
-#include "emit.h"
+#include "py/emit.h"
 
-#define EMIT(fun, arg...) (emit_method_table->fun(emit, ##arg))
+#if MICROPY_ENABLE_COMPILER
 
-void emit_common_load_id(emit_t *emit, const emit_method_table_t *emit_method_table, scope_t *scope, qstr qstr) {
-    // assumes pass is greater than 1, ie that all identifiers are defined in the scope
-
-    id_info_t *id = scope_find(scope, qstr);
-    assert(id != NULL); // TODO can this ever fail?
-
-    // call the emit backend with the correct code
-    if (id == NULL || id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
-        EMIT(load_name, qstr);
-    } else if (id->kind == ID_INFO_KIND_GLOBAL_EXPLICIT) {
-        EMIT(load_global, qstr);
-    } else if (id->kind == ID_INFO_KIND_LOCAL) {
-        EMIT(load_fast, qstr, id->local_num);
-    } else if (id->kind == ID_INFO_KIND_CELL || id->kind == ID_INFO_KIND_FREE) {
-        EMIT(load_deref, qstr, id->local_num);
-    } else {
-        assert(0);
+void mp_emit_common_get_id_for_load(scope_t *scope, qstr qst) {
+    // name adding/lookup
+    bool added;
+    id_info_t *id = scope_find_or_add_id(scope, qst, &added);
+    if (added) {
+        scope_find_local_and_close_over(scope, id, qst);
     }
 }
 
-void emit_common_store_id(emit_t *emit, const emit_method_table_t *emit_method_table, scope_t *scope, qstr qstr) {
-    // assumes pass is greater than 1, ie that all identifiers are defined in the scope
-
-    id_info_t *id = scope_find(scope, qstr);
-    assert(id != NULL); // TODO can this ever fail?
-
-    // call the emit backend with the correct code
-    if (id == NULL || id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
-        EMIT(store_name, qstr);
-    } else if (id->kind == ID_INFO_KIND_GLOBAL_EXPLICIT) {
-        EMIT(store_global, qstr);
-    } else if (id->kind == ID_INFO_KIND_LOCAL) {
-        EMIT(store_fast, qstr, id->local_num);
-    } else if (id->kind == ID_INFO_KIND_CELL || id->kind == ID_INFO_KIND_FREE) {
-        EMIT(store_deref, qstr, id->local_num);
-    } else {
-        assert(0);
+void mp_emit_common_get_id_for_modification(scope_t *scope, qstr qst) {
+    // name adding/lookup
+    bool added;
+    id_info_t *id = scope_find_or_add_id(scope, qst, &added);
+    if (added) {
+        if (SCOPE_IS_FUNC_LIKE(scope->kind)) {
+            id->kind = ID_INFO_KIND_LOCAL;
+        } else {
+            id->kind = ID_INFO_KIND_GLOBAL_IMPLICIT;
+        }
+    } else if (SCOPE_IS_FUNC_LIKE(scope->kind) && id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
+        // rebind as a local variable
+        id->kind = ID_INFO_KIND_LOCAL;
     }
 }
 
-void emit_common_delete_id(emit_t *emit, const emit_method_table_t *emit_method_table, scope_t *scope, qstr qstr) {
+void mp_emit_common_id_op(emit_t *emit, const mp_emit_method_table_id_ops_t *emit_method_table, scope_t *scope, qstr qst) {
     // assumes pass is greater than 1, ie that all identifiers are defined in the scope
 
-    id_info_t *id = scope_find(scope, qstr);
-    assert(id != NULL); // TODO can this ever fail?
+    id_info_t *id = scope_find(scope, qst);
+    assert(id != NULL);
 
     // call the emit backend with the correct code
-    if (id == NULL || id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
-        EMIT(delete_name, qstr);
+    if (id->kind == ID_INFO_KIND_GLOBAL_IMPLICIT) {
+        emit_method_table->name(emit, qst);
     } else if (id->kind == ID_INFO_KIND_GLOBAL_EXPLICIT) {
-        EMIT(delete_global, qstr);
+        emit_method_table->global(emit, qst);
     } else if (id->kind == ID_INFO_KIND_LOCAL) {
-        EMIT(delete_fast, qstr, id->local_num);
-    } else if (id->kind == ID_INFO_KIND_CELL || id->kind == ID_INFO_KIND_FREE) {
-        EMIT(delete_deref, qstr, id->local_num);
+        emit_method_table->fast(emit, qst, id->local_num);
     } else {
-        assert(0);
+        assert(id->kind == ID_INFO_KIND_CELL || id->kind == ID_INFO_KIND_FREE);
+        emit_method_table->deref(emit, qst, id->local_num);
     }
 }
+
+#endif // MICROPY_ENABLE_COMPILER

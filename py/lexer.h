@@ -1,3 +1,37 @@
+/*
+ * This file is part of the Micro Python project, http://micropython.org/
+ *
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2013, 2014 Damien P. George
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+#ifndef __MICROPY_INCLUDED_PY_LEXER_H__
+#define __MICROPY_INCLUDED_PY_LEXER_H__
+
+#include <stdint.h>
+
+#include "py/mpconfig.h"
+#include "py/qstr.h"
+#include "py/reader.h"
+
 /* lexer.h -- simple tokeniser for Micro Python
  *
  * Uses (byte) length instead of null termination.
@@ -5,33 +39,39 @@
  */
 
 typedef enum _mp_token_kind_t {
-    MP_TOKEN_END,                   // 0
+    MP_TOKEN_END,
 
     MP_TOKEN_INVALID,
     MP_TOKEN_DEDENT_MISMATCH,
     MP_TOKEN_LONELY_STRING_OPEN,
 
-    MP_TOKEN_NEWLINE,               // 4
-    MP_TOKEN_INDENT,                // 5
-    MP_TOKEN_DEDENT,                // 6
+    MP_TOKEN_NEWLINE,
+    MP_TOKEN_INDENT,
+    MP_TOKEN_DEDENT,
 
-    MP_TOKEN_NAME,                  // 7
-    MP_TOKEN_NUMBER,
+    MP_TOKEN_NAME,
+    MP_TOKEN_INTEGER,
+    MP_TOKEN_FLOAT_OR_IMAG,
     MP_TOKEN_STRING,
     MP_TOKEN_BYTES,
 
     MP_TOKEN_ELLIPSIS,
 
-    MP_TOKEN_KW_FALSE,              // 12
+    MP_TOKEN_KW_FALSE,
     MP_TOKEN_KW_NONE,
     MP_TOKEN_KW_TRUE,
+    MP_TOKEN_KW___DEBUG__,
     MP_TOKEN_KW_AND,
     MP_TOKEN_KW_AS,
     MP_TOKEN_KW_ASSERT,
+    #if MICROPY_PY_ASYNC_AWAIT
+    MP_TOKEN_KW_ASYNC,
+    MP_TOKEN_KW_AWAIT,
+    #endif
     MP_TOKEN_KW_BREAK,
     MP_TOKEN_KW_CLASS,
     MP_TOKEN_KW_CONTINUE,
-    MP_TOKEN_KW_DEF,                // 21
+    MP_TOKEN_KW_DEF,
     MP_TOKEN_KW_DEL,
     MP_TOKEN_KW_ELIF,
     MP_TOKEN_KW_ELSE,
@@ -41,7 +81,7 @@ typedef enum _mp_token_kind_t {
     MP_TOKEN_KW_FROM,
     MP_TOKEN_KW_GLOBAL,
     MP_TOKEN_KW_IF,
-    MP_TOKEN_KW_IMPORT,             // 31
+    MP_TOKEN_KW_IMPORT,
     MP_TOKEN_KW_IN,
     MP_TOKEN_KW_IS,
     MP_TOKEN_KW_LAMBDA,
@@ -51,12 +91,12 @@ typedef enum _mp_token_kind_t {
     MP_TOKEN_KW_PASS,
     MP_TOKEN_KW_RAISE,
     MP_TOKEN_KW_RETURN,
-    MP_TOKEN_KW_TRY,                // 41
+    MP_TOKEN_KW_TRY,
     MP_TOKEN_KW_WHILE,
     MP_TOKEN_KW_WITH,
     MP_TOKEN_KW_YIELD,
 
-    MP_TOKEN_OP_PLUS,               // 45
+    MP_TOKEN_OP_PLUS,
     MP_TOKEN_OP_MINUS,
     MP_TOKEN_OP_STAR,
     MP_TOKEN_OP_DBL_STAR,
@@ -66,7 +106,7 @@ typedef enum _mp_token_kind_t {
     MP_TOKEN_OP_LESS,
     MP_TOKEN_OP_DBL_LESS,
     MP_TOKEN_OP_MORE,
-    MP_TOKEN_OP_DBL_MORE,           // 55
+    MP_TOKEN_OP_DBL_MORE,
     MP_TOKEN_OP_AMPERSAND,
     MP_TOKEN_OP_PIPE,
     MP_TOKEN_OP_CARET,
@@ -76,7 +116,7 @@ typedef enum _mp_token_kind_t {
     MP_TOKEN_OP_DBL_EQUAL,
     MP_TOKEN_OP_NOT_EQUAL,
 
-    MP_TOKEN_DEL_PAREN_OPEN,        // 64
+    MP_TOKEN_DEL_PAREN_OPEN,
     MP_TOKEN_DEL_PAREN_CLOSE,
     MP_TOKEN_DEL_BRACKET_OPEN,
     MP_TOKEN_DEL_BRACKET_CLOSE,
@@ -86,7 +126,7 @@ typedef enum _mp_token_kind_t {
     MP_TOKEN_DEL_COLON,
     MP_TOKEN_DEL_PERIOD,
     MP_TOKEN_DEL_SEMICOLON,
-    MP_TOKEN_DEL_AT,                // 74
+    MP_TOKEN_DEL_AT,
     MP_TOKEN_DEL_EQUAL,
     MP_TOKEN_DEL_PLUS_EQUAL,
     MP_TOKEN_DEL_MINUS_EQUAL,
@@ -96,50 +136,60 @@ typedef enum _mp_token_kind_t {
     MP_TOKEN_DEL_PERCENT_EQUAL,
     MP_TOKEN_DEL_AMPERSAND_EQUAL,
     MP_TOKEN_DEL_PIPE_EQUAL,
-    MP_TOKEN_DEL_CARET_EQUAL,       // 84
+    MP_TOKEN_DEL_CARET_EQUAL,
     MP_TOKEN_DEL_DBL_MORE_EQUAL,
     MP_TOKEN_DEL_DBL_LESS_EQUAL,
     MP_TOKEN_DEL_DBL_STAR_EQUAL,
     MP_TOKEN_DEL_MINUS_MORE,
 } mp_token_kind_t;
 
-typedef struct _mp_token_t {
-    const char *src_name;       // name of source
-    uint src_line;              // source line
-    uint src_column;            // source column
+// this data structure is exposed for efficiency
+// public members are: source_name, tok_line, tok_column, tok_kind, vstr
+typedef struct _mp_lexer_t {
+    qstr source_name;           // name of source
+    mp_reader_t reader;         // stream source
 
-    mp_token_kind_t kind;       // kind of token
-    const char *str;            // string of token (valid only while this token is current token)
-    uint len;                   // (byte) length of string of token
-} mp_token_t;
+    unichar chr0, chr1, chr2;   // current cached characters from source
 
-// the next-char function must return the next character in the stream
-// it must return MP_LEXER_CHAR_EOF if end of stream
-// it can be called again after returning MP_LEXER_CHAR_EOF, and in that case must return MP_LEXER_CHAR_EOF
-#define MP_LEXER_CHAR_EOF (-1)
-typedef unichar (*mp_lexer_stream_next_char_t)(void*);
-typedef void (*mp_lexer_stream_close_t)(void*);
+    size_t line;                // current source line
+    size_t column;              // current source column
 
-typedef struct _mp_lexer_t mp_lexer_t;
+    mp_int_t emit_dent;             // non-zero when there are INDENT/DEDENT tokens to emit
+    mp_int_t nested_bracket_level;  // >0 when there are nested brackets over multiple lines
 
-void mp_token_show(const mp_token_t *tok);
-void mp_token_show_error_prefix(const mp_token_t *tok);
-bool mp_token_show_error(const mp_token_t *tok, const char *msg);
+    size_t alloc_indent_level;
+    size_t num_indent_level;
+    uint16_t *indent_level;
 
-mp_lexer_t *mp_lexer_new(const char *src_name, void *stream_data, mp_lexer_stream_next_char_t stream_next_char, mp_lexer_stream_close_t stream_close);
-mp_lexer_t *mp_lexer_new_from_str_len(const char *src_name, const char *str, uint len, uint free_len);
+    size_t tok_line;            // token source line
+    size_t tok_column;          // token source column
+    mp_token_kind_t tok_kind;   // token kind
+    vstr_t vstr;                // token data
+} mp_lexer_t;
+
+mp_lexer_t *mp_lexer_new(qstr src_name, mp_reader_t reader);
+mp_lexer_t *mp_lexer_new_from_str_len(qstr src_name, const char *str, size_t len, size_t free_len);
 
 void mp_lexer_free(mp_lexer_t *lex);
 void mp_lexer_to_next(mp_lexer_t *lex);
-const mp_token_t *mp_lexer_cur(const mp_lexer_t *lex);
-bool mp_lexer_is_kind(mp_lexer_t *lex, mp_token_kind_t kind);
-/* unused
-bool mp_lexer_is_str(mp_lexer_t *lex, const char *str);
-bool mp_lexer_opt_kind(mp_lexer_t *lex, mp_token_kind_t kind);
-bool mp_lexer_opt_str(mp_lexer_t *lex, const char *str);
-*/
-bool mp_lexer_show_error(mp_lexer_t *lex, const char *msg);
-bool mp_lexer_show_error_pythonic(mp_lexer_t *lex, const char *msg);
 
-// used to import a module; must be implemented for a specific port
-mp_lexer_t *mp_import_open_file(qstr mod_name);
+/******************************************************************/
+// platform specific import function; must be implemented for a specific port
+// TODO tidy up, rename, or put elsewhere
+
+//mp_lexer_t *mp_import_open_file(qstr mod_name);
+
+typedef enum {
+    MP_IMPORT_STAT_NO_EXIST,
+    MP_IMPORT_STAT_DIR,
+    MP_IMPORT_STAT_FILE,
+} mp_import_stat_t;
+
+mp_import_stat_t mp_import_stat(const char *path);
+mp_lexer_t *mp_lexer_new_from_file(const char *filename);
+
+#if MICROPY_HELPER_LEXER_UNIX
+mp_lexer_t *mp_lexer_new_from_fd(qstr filename, int fd, bool close_fd);
+#endif
+
+#endif // __MICROPY_INCLUDED_PY_LEXER_H__

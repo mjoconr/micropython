@@ -1,5 +1,5 @@
-#include "misc.h"
-#include "../stm/lcd.h"
+#include "py/obj.h"
+#include "../stmhal/lcd.h"
 
 void lcd_init(void) {
 }
